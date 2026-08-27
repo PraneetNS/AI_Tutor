@@ -211,15 +211,15 @@ class IntentClassifier:
         """Deterministic heuristic fallback for offline or error cases."""
         lower = student_message.lower().strip()
 
-        if any(w in lower for w in ["joke", "weather", "recipe", "game", "hi", "hello", "who are you"]):
+        if re.search(r"\b(joke|jokes|weather|recipe|recipes|game|games|gaming|hi|hello|hey|who are you)\b", lower):
             label = IntentLabel.OFF_TOPIC
             conf = 0.85
             rationale = "Heuristic off-topic keyword match"
-        elif any(w in lower for w in ["what is", "syntax", "formula", "define", "name", "acronym", "meaning"]):
+        elif re.search(r"\b(what is|syntax|formula|define|definition|name|acronym|meaning)\b", lower):
             label = IntentLabel.FACTUAL
             conf = 0.78
             rationale = "Heuristic factual keyword match"
-        elif any(w in lower for w in ["why", "how", "difference", "explain", "tradeoff", "understand", "intuition"]):
+        elif re.search(r"\b(why|how|difference|explain|tradeoff|understand|intuition|hint|stuck|gradient|neural|learning)\b", lower):
             label = IntentLabel.CONCEPT
             conf = 0.82
             rationale = "Heuristic concept keyword match"
