@@ -13,6 +13,7 @@ from .models import (
     SourceCitation,
     LearningEventType,
     LearningEvent,
+    BKTParams,
     ConceptMastery,
     Misconception,
     BehaviorProfile,
@@ -26,6 +27,20 @@ from .models import (
     KnowledgeContext,
     OrchestratedContext,
     ReasonerResult,
+    ModelUsage,
+    ModelResponse,
+    ConceptNode,
+    ConceptPrerequisiteEdge,
+    CurriculumPosition,
+    RootCauseDiagnosis,
+)
+from .concept_graph import (
+    BaseConceptGraphStore,
+    InMemoryConceptGraph,
+    ConceptGraph,
+    ML_CONCEPTS,
+    ML_EDGES,
+    create_ml_concept_graph,
 )
 from .session_store import (
     BaseSessionStore,
@@ -61,7 +76,19 @@ from .tutor_core import (
 )
 from .review_logger import ReviewLogger
 from .classifier import IntentClassifier, FastRuleMatcher
-from .guardrails import ResponseGuardrail, GuardrailResult
+from .guardrails import (
+    GuardrailPipeline,
+    InputGuardrailResult,
+    OutputGuardrailResult,
+    ResponseGuardrail,
+    GuardrailResult,
+)
+from .truthfulness_checker import (
+    TruthfulnessChecker,
+    TruthfulnessResult,
+    MathVerificationResult,
+    FactualVerificationResult,
+)
 from .pipeline import (
     BaseRouter,
     DefaultRouter,
@@ -88,6 +115,7 @@ from .learner_store import (
     PostgresRedisLearnerStateStore,
 )
 from .learner_model import (
+    BKTUpdater,
     KnowledgeTracer,
     MisconceptionEngine,
     BehavioralModel,
@@ -113,13 +141,21 @@ from .tutor_reasoner import (
 )
 from .model_gateway import (
     ModelGateway,
+    BaseProviderAdapter,
     BaseModelProvider,
+    GPTAdapter,
+    ClaudeAdapter,
+    GeminiAdapter,
+    MockAdapter,
     OpenAIProvider,
     AnthropicProvider,
     QwenProvider,
     MockProvider,
     OUTPUT_BUDGET,
     resolve_max_tokens,
+    GoldenRegressionRunner,
+    GoldenRegressionReport,
+    GOLDEN_CONVERSATIONS,
 )
 from .api import create_app, app
 
@@ -157,8 +193,15 @@ __all__ = [
     "ReviewLogger",
     "IntentClassifier",
     "FastRuleMatcher",
+    "GuardrailPipeline",
+    "InputGuardrailResult",
+    "OutputGuardrailResult",
     "ResponseGuardrail",
     "GuardrailResult",
+    "TruthfulnessChecker",
+    "TruthfulnessResult",
+    "MathVerificationResult",
+    "FactualVerificationResult",
     "BaseRouter",
     "DefaultRouter",
     "BasePedagogyEngine",
@@ -173,6 +216,7 @@ __all__ = [
     "BudgetManager",
     "LearningEventType",
     "LearningEvent",
+    "BKTParams",
     "ConceptMastery",
     "Misconception",
     "BehaviorProfile",
@@ -186,6 +230,7 @@ __all__ = [
     "BaseLearnerStateStore",
     "InMemoryLearnerStateStore",
     "PostgresRedisLearnerStateStore",
+    "BKTUpdater",
     "KnowledgeTracer",
     "MisconceptionEngine",
     "BehavioralModel",
@@ -204,6 +249,18 @@ __all__ = [
     "KnowledgeAgent",
     "ContextOrchestrator",
     "ReasonerResult",
+    "ModelUsage",
+    "ModelResponse",
+    "ConceptNode",
+    "ConceptPrerequisiteEdge",
+    "CurriculumPosition",
+    "RootCauseDiagnosis",
+    "BaseConceptGraphStore",
+    "InMemoryConceptGraph",
+    "ConceptGraph",
+    "ML_CONCEPTS",
+    "ML_EDGES",
+    "create_ml_concept_graph",
     "QuizQuestion",
     "AssessmentGrade",
     "BaseTutorSubAgent",
@@ -212,13 +269,21 @@ __all__ = [
     "AssessmentAgent",
     "TutorReasoner",
     "ModelGateway",
+    "BaseProviderAdapter",
     "BaseModelProvider",
+    "GPTAdapter",
+    "ClaudeAdapter",
+    "GeminiAdapter",
+    "MockAdapter",
     "OpenAIProvider",
     "AnthropicProvider",
     "QwenProvider",
     "MockProvider",
     "OUTPUT_BUDGET",
     "resolve_max_tokens",
+    "GoldenRegressionRunner",
+    "GoldenRegressionReport",
+    "GOLDEN_CONVERSATIONS",
     "create_app",
     "app",
 ]

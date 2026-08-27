@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 import uuid
 
 
@@ -128,6 +128,40 @@ class LearningEvent(BaseModel):
 # Learner State Schemas
 # ---------------------------------------------------------------------------
 
+class BKTParams(BaseModel):
+    """
+    Bayesian Knowledge Tracing (BKT) 4-parameter configuration per concept.
+
+    Parameters:
+    - p_l0: Prior probability of already knowing the concept P(L0) [default: 0.3]
+    - p_t:  Probability of learning it after one opportunity P(T) [default: 0.1]
+    - p_g:  Probability of guessing right without knowing P(G) [default: 0.25]
+    - p_s:  Probability of slipping (wrong despite knowing) P(S) [default: 0.1]
+    """
+    p_l0: float = Field(default=0.3, ge=0.0, le=1.0, validation_alias=AliasChoices("p_l0", "P_L0", "pL0", "P_l0"), description="Prior probability P(L0)")
+    p_t: float = Field(default=0.1, ge=0.0, le=1.0, validation_alias=AliasChoices("p_t", "P_T", "pT", "P_t"), description="Learning transition probability P(T)")
+    p_g: float = Field(default=0.25, ge=0.0, le=1.0, validation_alias=AliasChoices("p_g", "P_G", "pG", "P_g"), description="Guess probability P(G)")
+    p_s: float = Field(default=0.1, ge=0.0, le=1.0, validation_alias=AliasChoices("p_s", "P_S", "pS", "P_s"), description="Slip probability P(S)")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def P_L0(self) -> float:
+        return self.p_l0
+
+    @property
+    def P_T(self) -> float:
+        return self.p_t
+
+    @property
+    def P_G(self) -> float:
+        return self.p_g
+
+    @property
+    def P_S(self) -> float:
+        return self.p_s
+
+
 class ConceptMastery(BaseModel):
     """Bayesian Knowledge Tracing mastery model for a specific concept."""
     concept: str = Field(..., description="Concept / skill name or key")
@@ -197,6 +231,52 @@ class LearnerState(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Knowledge Graph & Curriculum Position Schemas
+# ---------------------------------------------------------------------------
+
+class ConceptNode(BaseModel):
+    """Concept entity corresponding to 'concepts' table."""
+    concept_id: str = Field(..., description="Unique slug/identifier for the concept")
+    domain: str = Field(default="general", description="Subject or domain area (e.g., machine_learning)")
+    name: str = Field(..., description="Human-readable concept title")
+    description: Optional[str] = Field(default=None, description="Explanation or scope of the concept")
+
+
+class ConceptPrerequisiteEdge(BaseModel):
+    """Prerequisite relationship corresponding to 'concept_prerequisites' table."""
+    concept_id: str = Field(..., description="Target concept ID")
+    prerequisite_id: str = Field(..., description="Required prerequisite concept ID")
+    weight: float = Field(default=1.0, ge=0.0, description="Dependency strength/weight")
+
+
+class CurriculumPosition(BaseModel):
+    """
+    Deterministic curriculum state calculated before LLM reasoning:
+    Tracks mastered, in-progress, locked, and next-ready concepts.
+    """
+    current_concept: Optional[str] = Field(default=None, description="Active concept under instruction")
+    mastered: List[str] = Field(default_factory=list, description="List of mastered concept IDs")
+    in_progress: List[str] = Field(default_factory=list, description="List of in-progress concept IDs")
+    locked: List[str] = Field(default_factory=list, description="Concepts locked due to unmastered prerequisites")
+    next_ready: List[str] = Field(default_factory=list, description="Concepts unlocked whose prerequisites are all met")
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class RootCauseDiagnosis(BaseModel):
+    """
+    Deterministic diagnostic root-cause gap computed by backward traversal
+    over the concept prerequisite DAG.
+    """
+    struggling_concept: str = Field(..., description="Concept the learner is currently struggling with")
+    likely_root_gap: Optional[str] = Field(default=None, description="Identified prerequisite root gap with lowest mastery")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Confidence score in the root-cause diagnosis")
+    chain_analyzed: List[str] = Field(default_factory=list, description="Full prerequisite ancestry chain analyzed")
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+# ---------------------------------------------------------------------------
 # Teaching Strategy Schemas
 # ---------------------------------------------------------------------------
 
@@ -257,6 +337,14 @@ class TeachingStrategy(BaseModel):
     difficulty_adjustment: Optional[str] = Field(
         default=None,
         description="Target difficulty level ('easy', 'medium', 'hard' / 'foundational', 'intermediate', 'advanced')"
+    )
+    curriculum_position: Optional[CurriculumPosition] = Field(
+        default=None,
+        description="Computed deterministic curriculum position (mastered, in_progress, locked, next_ready)"
+    )
+    root_cause_diagnosis: Optional[RootCauseDiagnosis] = Field(
+        default=None,
+        description="Computed root cause gap when student is struggling"
     )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
@@ -512,50 +600,120 @@ class OrchestratedContext(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     def to_prompt_sections(self) -> Dict[str, str]:
-        """Formats the unified context into named sections for BudgetManager prompt assembly."""
+        """
+        Formats the unified context into named sections for BudgetManager prompt assembly.
+        Curriculum position and root-cause diagnosis are pre-computed deterministically
+        by ConceptGraph and injected here — the LLM receives answers, not raw history.
+        """
         import json
 
-        # 1. Learner state section
+        strategy = self.learning_context.teaching_strategy
+
+        # 1. Mastery snapshot (top-N lowest-mastery concepts + active misconceptions)
         concepts_list = []
         if self.learning_context.learner_state:
-            for c_name, cm in self.learning_context.learner_state.concept_mastery.items():
-                concepts_list.append({"name": c_name, "mastery": cm.mastery})
+            sorted_concepts = sorted(
+                self.learning_context.learner_state.concept_mastery.items(),
+                key=lambda kv: kv[1].mastery
+            )
+            for c_name, cm in sorted_concepts[:10]:  # budget-limited to top 10 weakest
+                concepts_list.append({"name": c_name, "mastery": round(cm.mastery, 3)})
 
         misconceptions_list = [
-            m.description for m in self.learning_context.active_misconceptions
+            {"key": m.key, "description": m.description, "confidence": m.confidence}
+            for m in self.learning_context.active_misconceptions
         ]
-        learner_state_json = json.dumps({
-            "concepts": concepts_list,
-            "misconceptions": misconceptions_list,
-            "target_concept": self.learning_context.target_concept,
-            "recommended_strategy": self.learning_context.teaching_strategy.recommendation if self.learning_context.teaching_strategy else "guide"
-        })
 
-        # 2. Conversation history
+        # 2. Curriculum position (pre-computed, NOT inferred by LLM)
+        curriculum_position_dict: Dict[str, Any] = {}
+        if strategy and strategy.curriculum_position:
+            cp = strategy.curriculum_position
+            curriculum_position_dict = {
+                "current_concept": cp.current_concept,
+                "mastered": cp.mastered,
+                "in_progress": cp.in_progress,
+                "locked": cp.locked,
+                "next_ready": cp.next_ready,
+            }
+
+        # 3. Root-cause diagnosis (pre-computed, NOT inferred by LLM)
+        root_cause_dict: Dict[str, Any] = {}
+        if strategy and strategy.root_cause_diagnosis:
+            rcd = strategy.root_cause_diagnosis
+            root_cause_dict = {
+                "struggling_concept": rcd.struggling_concept,
+                "likely_root_gap": rcd.likely_root_gap,
+                "confidence": rcd.confidence,
+                "chain_analyzed": rcd.chain_analyzed,
+            }
+
+        # 4. Behavioral profile
+        behavioral: Dict[str, Any] = {}
+        if self.learning_context.behavior_summary:
+            bs = self.learning_context.behavior_summary
+            behavioral = {
+                "persistence": bs.get("avg_persistence", 0.0),
+                "engagement": bs.get("engagement_score", 1.0),
+                "avg_hints": bs.get("hints_per_session", 0.0),
+                "sessions_total": bs.get("sessions_total", 0),
+            }
+
+        # Assemble the full learner state JSON handed to LLM
+        learner_state_json = json.dumps({
+            "student_id": self.learning_context.student_id,
+            "course_id": self.course_id,
+            "lecture_id": self.lecture_id,
+            "mastery_snapshot": concepts_list,
+            "misconceptions": misconceptions_list,
+            "curriculum_position": curriculum_position_dict,
+            "root_cause_diagnosis": root_cause_dict,
+            "behavioral": behavioral,
+            "target_concept": self.learning_context.target_concept,
+            "recommended_strategy": strategy.recommendation if strategy else "guide",
+        }, indent=None)
+
+        # 5. Conversation history
         history_lines = [
             f"{msg.role.capitalize()}: {msg.content}"
             for msg in self.session_context.recent_messages
         ]
         history_text = "\n".join(history_lines) if history_lines else ""
 
-        # Conversation summary fallback
-        summary_text = f"Student is discussing {self.learning_context.target_concept or 'concepts'} ({len(self.session_context.recent_messages)} prior turns)."
+        # 6. Session summary
+        summary_text = (
+            f"Student ({self.session_context.detected_mood} mood) is studying "
+            f"'{self.learning_context.target_concept or 'concepts'}' "
+            f"({len(self.session_context.recent_messages)} prior turns, "
+            f"turn #{self.session_context.turn_count})."
+        )
 
-        # 3. RAG knowledge section
+        # 7. RAG knowledge section
         rag_chunks = [
             f"[Source: {c.source_title}]: {c.content}"
             for c in self.knowledge_context.chunks
         ]
         rag_text = "\n---\n".join(rag_chunks) if rag_chunks else ""
 
-        # 4. Teaching Strategy directive
+        # 8. Teaching Strategy directive (explicit instruction to LLM)
         strategy_directive = ""
-        if self.learning_context.teaching_strategy:
-            strategy_directive = (
-                f"PEDAGOGICAL DIRECTIVE: {self.learning_context.teaching_strategy.recommendation.upper()}\n"
-                f"Rationale: {self.learning_context.teaching_strategy.rationale}\n"
-                f"Hints remaining: {self.learning_context.teaching_strategy.hint_budget_remaining}"
-            )
+        if strategy:
+            lines = [
+                f"PEDAGOGICAL DIRECTIVE: {strategy.recommendation.upper()}",
+                f"Rationale: {strategy.rationale}",
+                f"Hints remaining: {strategy.hint_budget_remaining}",
+            ]
+            if strategy.root_cause_diagnosis and strategy.root_cause_diagnosis.likely_root_gap:
+                rcd = strategy.root_cause_diagnosis
+                lines.append(
+                    f"ROOT CAUSE GAP: Student likely struggles with "
+                    f"'{rcd.likely_root_gap}' (confidence {rcd.confidence:.0%}). "
+                    f"Address this prerequisite before re-explaining '{rcd.struggling_concept}'."
+                )
+            if strategy.curriculum_position and strategy.curriculum_position.next_ready:
+                lines.append(
+                    f"NEXT READY CONCEPTS: {', '.join(strategy.curriculum_position.next_ready[:3])}"
+                )
+            strategy_directive = "\n".join(lines)
 
         return {
             "learner_state": learner_state_json,
@@ -579,5 +737,35 @@ class ReasonerResult(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Auxiliary execution metadata")
 
     model_config = ConfigDict(use_enum_values=True)
+
+
+# ---------------------------------------------------------------------------
+# Provider-Agnostic Gateway Response Schemas
+# ---------------------------------------------------------------------------
+
+class ModelUsage(BaseModel):
+    """Token consumption metadata for LLM generations."""
+    input_tokens: int = Field(default=0, ge=0, description="Count of prompt/input tokens")
+    output_tokens: int = Field(default=0, ge=0, description="Count of completion/output tokens")
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class ModelResponse(BaseModel):
+    """
+    Unified LLM response structure returned by ModelGateway and Provider Adapters.
+    """
+    content: str = Field(default="", description="Generated response content")
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Extracted tool/function calls")
+    finish_reason: str = Field(default="stop", description="Reason model stopped ('stop', 'length', 'tool_calls')")
+    usage: Dict[str, int] = Field(
+        default_factory=lambda: {"input_tokens": 0, "output_tokens": 0},
+        description="Token usage stats (input_tokens, output_tokens)"
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
 
 
