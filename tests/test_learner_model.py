@@ -8,6 +8,7 @@ BehavioralModel, and LearnerState persistence.
 import pytest
 from ai_tutor.models import (
     LearnerState,
+    BKTParams,
     ConceptMastery,
     LearningEvent,
     LearningEventType,
@@ -15,6 +16,7 @@ from ai_tutor.models import (
 from ai_tutor.event_bus import InMemoryEventBus
 from ai_tutor.learner_store import InMemoryLearnerStateStore
 from ai_tutor.learner_model import (
+    BKTUpdater,
     KnowledgeTracer,
     MisconceptionEngine,
     BehavioralModel,
@@ -23,8 +25,78 @@ from ai_tutor.learner_model import (
 
 
 # ---------------------------------------------------------------------------
-# 1. KnowledgeTracer (BKT) Tests
+# 1. BKTUpdater & KnowledgeTracer (BKT) Tests
 # ---------------------------------------------------------------------------
+
+class TestBKTUpdater:
+    def test_update_correct_with_defaults(self):
+        # Default params: P(L0)=0.3, P(T)=0.1, P(G)=0.25, P(S)=0.1
+        # P(L|correct) = (0.3 * 0.9) / (0.3 * 0.9 + 0.7 * 0.25) = 0.27 / 0.445 = 0.6067416
+        # P(L_new) = 0.6067416 + (1 - 0.6067416) * 0.1 = 0.6460674
+        result = BKTUpdater.update(prior_mastery=0.30, correct=True, hints_used=0)
+        assert result == pytest.approx(0.6461, abs=0.001)
+
+    def test_update_incorrect_with_defaults(self):
+        # Default params: P(L0)=0.3, P(T)=0.1, P(G)=0.25, P(S)=0.1
+        # P(L|incorrect) = (0.3 * 0.1) / (0.3 * 0.1 + 0.7 * 0.75) = 0.03 / 0.555 = 0.054054
+        # P(L_new) = 0.054054 + (1 - 0.054054) * 0.1 = 0.1486486
+        result = BKTUpdater.update(prior_mastery=0.30, correct=False, hints_used=0)
+        assert result == pytest.approx(0.1486, abs=0.001)
+
+    def test_hint_assisted_correct_treated_as_incorrect(self):
+        # If hints_used > 0, treat as incorrect regardless of correct=True
+        incorrect_result = BKTUpdater.update(prior_mastery=0.30, correct=False, hints_used=0)
+        hint_result_1 = BKTUpdater.update(prior_mastery=0.30, correct=True, hints_used=1)
+        hint_result_2 = BKTUpdater.update(prior_mastery=0.30, correct=True, hints_used=3)
+
+        assert hint_result_1 == incorrect_result
+        assert hint_result_2 == incorrect_result
+        assert hint_result_1 == pytest.approx(0.1486, abs=0.001)
+
+    def test_load_per_concept_bkt_params_from_config_table(self):
+        tuned = {
+            "eigenvalues": BKTParams(p_l0=0.2, p_t=0.15, p_g=0.2, p_s=0.05)
+        }
+        updater = BKTUpdater(config_table=tuned)
+
+        # Loaded tuned params
+        params_tuned = updater.get_params("eigenvalues")
+        assert params_tuned.p_l0 == 0.2
+        assert params_tuned.p_t == 0.15
+        assert params_tuned.p_g == 0.2
+        assert params_tuned.p_s == 0.05
+
+        # Fallback to default params
+        params_default = updater.get_params("unknown_concept")
+        assert params_default.p_l0 == 0.3
+        assert params_default.p_t == 0.1
+        assert params_default.p_g == 0.25
+        assert params_default.p_s == 0.1
+
+    def test_dynamic_param_registration(self):
+        updater = BKTUpdater()
+        custom = BKTParams(p_l0=0.4, p_t=0.2, p_g=0.3, p_s=0.05)
+        updater.set_params("matrix_multiplication", custom)
+
+        loaded = updater.get_params("matrix_multiplication")
+        assert loaded == custom
+
+    def test_bkt_params_uppercase_and_property_aliases(self):
+        params1 = BKTParams(P_L0=0.35, P_T=0.12, P_G=0.22, P_S=0.08)
+        assert params1.p_l0 == 0.35
+        assert params1.P_L0 == 0.35
+        assert params1.P_T == 0.12
+        assert params1.P_G == 0.22
+        assert params1.P_S == 0.08
+
+    def test_bkt_numerical_stability(self):
+        # Edge cases: 0.0 and 1.0 prior mastery
+        res_zero = BKTUpdater.update(prior_mastery=0.0, correct=True, hints_used=0)
+        assert 0.0 <= res_zero <= 1.0
+
+        res_one = BKTUpdater.update(prior_mastery=1.0, correct=False, hints_used=0)
+        assert 0.0 <= res_one <= 1.0
+
 
 class TestKnowledgeTracer:
     def test_correct_answer_increases_mastery(self):

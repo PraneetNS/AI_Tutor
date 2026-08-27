@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .models import (
     BehaviorProfile,
+    BKTParams,
     ConceptMastery,
     LearnerState,
     LearningEvent,
@@ -28,18 +29,100 @@ logger = logging.getLogger("ai_tutor.learner_model")
 
 
 # ---------------------------------------------------------------------------
-# 1. Knowledge Tracing (Standard BKT Updater)
+# 1. Knowledge Tracing (BKTUpdater & KnowledgeTracer)
 # ---------------------------------------------------------------------------
+
+class BKTUpdater:
+    """
+    Pure-math Bayesian Knowledge Tracing (BKT) updater engine.
+    Zero dependency on any LLM call — testable in isolation.
+
+    Two-step update formula:
+    1. Posterior given evidence:
+       - If hints_used > 0, treat as incorrect regardless of `correct` flag.
+       - If correct (and hints_used == 0):
+         P(L|correct) = [P(L) * (1 - P(S))] / [P(L) * (1 - P(S)) + (1 - P(L)) * P(G)]
+       - If incorrect (or hints_used > 0):
+         P(L|incorrect) = [P(L) * P(S)] / [P(L) * P(S) + (1 - P(L)) * (1 - P(G))]
+
+    2. Apply learning transition:
+       P(L_new) = P(L|evidence) + (1 - P(L|evidence)) * P(T)
+    """
+
+    DEFAULT_PARAMS: BKTParams = BKTParams(
+        p_l0=0.30,
+        p_t=0.10,
+        p_g=0.25,
+        p_s=0.10,
+    )
+
+    def __init__(
+        self,
+        config_table: Optional[Dict[str, BKTParams]] = None,
+        default_params: Optional[BKTParams] = None,
+    ) -> None:
+        self.default_params = default_params or self.DEFAULT_PARAMS
+        self.config_table: Dict[str, BKTParams] = dict(config_table or {})
+
+    def get_params(self, concept_id: Optional[str] = None) -> BKTParams:
+        """
+        Loads per-concept BKTParams from config table.
+        Falls back to defaults (P_L0=0.3, P_T=0.1, P_G=0.25, P_S=0.1)
+        if a concept has no tuned params yet.
+        """
+        if concept_id and concept_id in self.config_table:
+            return self.config_table[concept_id]
+        return self.default_params
+
+    def set_params(self, concept_id: str, params: BKTParams) -> None:
+        """Configures tuned parameters for a specific concept in the config table."""
+        self.config_table[concept_id] = params
+
+    @classmethod
+    def update(
+        cls,
+        prior_mastery: float,
+        correct: bool,
+        hints_used: int = 0,
+        params: Optional[BKTParams] = None,
+    ) -> float:
+        """
+        Updates learner mastery P(L) using the two-step BKT formula.
+
+        If hints_used > 0, treats the attempt as incorrect regardless of the `correct` flag.
+        """
+        if params is None:
+            params = cls.DEFAULT_PARAMS
+
+        # Prior mastery bounded in (0, 1) for numerical stability
+        p_l = max(0.0001, min(0.9999, float(prior_mastery)))
+        p_s = float(params.p_s)
+        p_g = float(params.p_g)
+        p_t = float(params.p_t)
+
+        # If hints_used > 0, treat as incorrect regardless of `correct` flag
+        is_effective_correct = bool(correct) and (int(hints_used) <= 0)
+
+        # 1. Posterior given evidence
+        if is_effective_correct:
+            numerator = p_l * (1.0 - p_s)
+            denominator = numerator + ((1.0 - p_l) * p_g)
+        else:
+            numerator = p_l * p_s
+            denominator = numerator + ((1.0 - p_l) * (1.0 - p_g))
+
+        posterior_p_l = numerator / max(1e-9, denominator)
+
+        # 2. Learning transition
+        p_l_new = posterior_p_l + ((1.0 - posterior_p_l) * p_t)
+
+        return max(0.0, min(1.0, round(p_l_new, 4)))
+
 
 class KnowledgeTracer:
     """
     Standard Bayesian Knowledge Tracing (BKT) engine.
-
-    Fixed v1 Model Parameters:
-    - P(L0)    : Initial mastery prior (default 0.10)
-    - P(T)     : Transition probability / learn rate (default 0.30)
-    - P(S)     : Slip rate (default 0.10) - probability of mistake when known
-    - P(G)     : Guess rate (default 0.20) - probability of correct guess when unknown
+    Wraps BKTUpdater and manages state updates for learner events.
     """
 
     def __init__(
@@ -47,37 +130,35 @@ class KnowledgeTracer:
         p_l0: float = 0.10,
         p_t: float = 0.30,
         p_s: float = 0.10,
-        p_g: float = 0.20
+        p_g: float = 0.20,
+        updater: Optional[BKTUpdater] = None,
+        config_table: Optional[Dict[str, BKTParams]] = None,
     ) -> None:
         self.p_l0 = p_l0
         self.p_t = p_t
         self.p_s = p_s
         self.p_g = p_g
+        default_params = BKTParams(p_l0=p_l0, p_t=p_t, p_s=p_s, p_g=p_g)
+        self.updater = updater or BKTUpdater(config_table=config_table, default_params=default_params)
 
     def update(
         self,
         current_mastery: float,
-        is_correct: bool
+        is_correct: bool,
+        hints_used: int = 0,
+        params: Optional[BKTParams] = None,
     ) -> float:
         """
         Calculates posterior mastery P(L_t) given observation and transit to P(L_{t+1}).
         """
-        p_l = max(0.001, min(0.999, current_mastery))
-
-        if is_correct:
-            # P(L | correct) = P(L) * (1 - P(S)) / [ P(L)*(1 - P(S)) + (1 - P(L))*P(G) ]
-            numerator = p_l * (1.0 - self.p_s)
-            denominator = numerator + ((1.0 - p_l) * self.p_g)
-        else:
-            # P(L | incorrect) = P(L) * P(S) / [ P(L)*P(S) + (1 - P(L))*(1 - P(G)) ]
-            numerator = p_l * self.p_s
-            denominator = numerator + ((1.0 - p_l) * (1.0 - self.p_g))
-
-        posterior_p_l = numerator / max(1e-9, denominator)
-
-        # Transition / learning opportunity step: P(L_next) = P(L_post) + (1 - P(L_post)) * P(T)
-        p_l_next = posterior_p_l + ((1.0 - posterior_p_l) * self.p_t)
-        return max(0.0, min(1.0, round(p_l_next, 4)))
+        if params is None:
+            params = BKTParams(p_l0=self.p_l0, p_t=self.p_t, p_s=self.p_s, p_g=self.p_g)
+        return self.updater.update(
+            prior_mastery=current_mastery,
+            correct=is_correct,
+            hints_used=hints_used,
+            params=params,
+        )
 
     def process_event(
         self,
@@ -102,24 +183,41 @@ class KnowledgeTracer:
         if not concept:
             return False
 
+        hints_used = event.payload.get("hints_used", 0)
+        if not hints_used and event.hint_level is not None:
+            hints_used = event.hint_level
+
         # Determine correctness
         if event_type == LearningEventType.ANSWER_REVEALED.value:
             # Tutor revealed answer because student was stuck -> treat as failed attempt
             is_correct = False
+            hints_used = max(hints_used, 1)
         else:
             is_correct = bool(event.payload.get("correct", False))
 
+        params = self.updater.get_params(concept)
+
         existing = state.concept_mastery.get(concept)
         if existing:
-            new_score = self.update(existing.mastery, is_correct)
+            new_score = self.updater.update(
+                prior_mastery=existing.mastery,
+                correct=is_correct,
+                hints_used=hints_used,
+                params=params,
+            )
             existing.mastery = new_score
             existing.attempts += 1
             if is_correct:
                 existing.correct += 1
             existing.last_updated = datetime.now(timezone.utc).isoformat()
         else:
-            initial_p_l = self.p_l0
-            new_score = self.update(initial_p_l, is_correct)
+            initial_p_l = params.p_l0
+            new_score = self.updater.update(
+                prior_mastery=initial_p_l,
+                correct=is_correct,
+                hints_used=hints_used,
+                params=params,
+            )
             state.concept_mastery[concept] = ConceptMastery(
                 concept=concept,
                 mastery=new_score,
@@ -129,6 +227,7 @@ class KnowledgeTracer:
             )
 
         return True
+
 
 
 # ---------------------------------------------------------------------------
