@@ -12,19 +12,26 @@ Rules:
 5. Default: recommend 'guide' (Socratic inquiry / diagnostics).
 
 Always surfaces the highest-confidence unresolved misconception as `misconception_to_address`.
+Always computes curriculum_position and root_cause_diagnosis deterministically via ConceptGraph
+before the LLM ever sees the context — the model receives answers, not raw history to infer from.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .models import (
+    CurriculumPosition,
     LearnerState,
     Misconception,
+    RootCauseDiagnosis,
     StrategyAction,
     TeachingStrategy,
 )
+
+if TYPE_CHECKING:
+    from .concept_graph import ConceptGraph
 
 logger = logging.getLogger("ai_tutor.context_resolver")
 
@@ -41,11 +48,13 @@ class ContextResolver:
         quiz_mastery_threshold: float = 0.8,
         challenge_mastery_threshold: float = 0.9,
         explain_failure_threshold: int = 2,
+        concept_graph: Optional["ConceptGraph"] = None,
     ) -> None:
         self.default_hint_budget = default_hint_budget
         self.quiz_mastery_threshold = quiz_mastery_threshold
         self.challenge_mastery_threshold = challenge_mastery_threshold
         self.explain_failure_threshold = explain_failure_threshold
+        self.concept_graph = concept_graph
 
     def resolve(
         self,
@@ -92,20 +101,53 @@ class ContextResolver:
         else:
             budget = self.default_hint_budget
 
-        # 2. Extract current mastery for target concept
+        # 2a. Compute CurriculumPosition deterministically via ConceptGraph (pre-LLM)
+        curriculum_position: Optional[CurriculumPosition] = None
+        if self.concept_graph is not None and learner_state is not None:
+            try:
+                curriculum_position = self.concept_graph.compute_curriculum_position(
+                    learner_state=learner_state,
+                    current_concept=target_concept,
+                )
+            except Exception as e:
+                logger.warning("[ContextResolver] CurriculumPosition computation failed: %s", e)
+
+        # 2b. Compute RootCauseDiagnosis deterministically via ConceptGraph (pre-LLM)
+        root_cause_diagnosis: Optional[RootCauseDiagnosis] = None
+        if (
+            self.concept_graph is not None
+            and learner_state is not None
+            and target_concept is not None
+            and consecutive_failures >= 1
+        ):
+            try:
+                diagnosis = self.concept_graph.diagnose_root_cause(
+                    struggling_concept=target_concept,
+                    learner_state=learner_state,
+                )
+                if diagnosis.likely_root_gap is not None:
+                    root_cause_diagnosis = diagnosis
+                    logger.info(
+                        "[ContextResolver] Root cause: struggling=%r gap=%r confidence=%.2f",
+                        target_concept, diagnosis.likely_root_gap, diagnosis.confidence,
+                    )
+            except Exception as e:
+                logger.warning("[ContextResolver] RootCauseDiagnosis computation failed: %s", e)
+
+        # 3. Extract current mastery for target concept
         current_mastery: Optional[float] = None
         if learner_state and target_concept:
             cm = learner_state.concept_mastery.get(target_concept)
             if cm:
                 current_mastery = cm.mastery
 
-        # 3. Find highest-confidence unresolved misconception
+        # 4. Find highest-confidence unresolved misconception
         highest_misconception = self._find_highest_confidence_misconception(
             learner_state=learner_state,
             target_concept=target_concept
         )
 
-        # 4. Evaluate decision tree according to pedagogical rules
+        # 5. Evaluate decision tree according to pedagogical rules
         recommendation: StrategyAction
         rationale: str
 
@@ -159,6 +201,8 @@ class ContextResolver:
             rationale=rationale,
             course_id=course_id,
             lecture_id=lecture_id,
+            curriculum_position=curriculum_position,
+            root_cause_diagnosis=root_cause_diagnosis,
             metadata=extra_meta,
         )
 
