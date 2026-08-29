@@ -33,7 +33,16 @@ from .models import (
     ConceptPrerequisiteEdge,
     CurriculumPosition,
     RootCauseDiagnosis,
+    StrategyEffectivenessRecord,
 )
+from .strategy_engine import (
+    STRATEGY_TAXONOMY,
+    BaseStrategyEffectivenessStore,
+    InMemoryStrategyEffectivenessStore,
+    PostgresStrategyEffectivenessStore,
+    StrategyEngine,
+)
+
 from .concept_graph import (
     BaseConceptGraphStore,
     InMemoryConceptGraph,
@@ -286,4 +295,11 @@ __all__ = [
     "GOLDEN_CONVERSATIONS",
     "create_app",
     "app",
+    "StrategyEffectivenessRecord",
+    "STRATEGY_TAXONOMY",
+    "BaseStrategyEffectivenessStore",
+    "InMemoryStrategyEffectivenessStore",
+    "PostgresStrategyEffectivenessStore",
+    "StrategyEngine",
 ]
+

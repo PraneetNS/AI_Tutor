@@ -73,3 +73,18 @@ CREATE TABLE IF NOT EXISTS interaction_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_events_user ON interaction_events (user_id, created_at DESC);
+
+-- 6. Learner Strategy Effectiveness (Pedagogical Strategy Optimization)
+CREATE TABLE IF NOT EXISTS learner_strategy_effectiveness (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    strategy_category VARCHAR(32),
+    strategy_type VARCHAR(32),
+    concept_domain VARCHAR(64),
+    times_used INT DEFAULT 0,
+    times_led_to_mastery INT DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (user_id, strategy_category, strategy_type, concept_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_effectiveness_user ON learner_strategy_effectiveness (user_id, concept_domain);
+

@@ -346,12 +346,46 @@ class TeachingStrategy(BaseModel):
         default=None,
         description="Computed root cause gap when student is struggling"
     )
+    strategy_category: Optional[str] = Field(
+        default=None,
+        description="High-level strategy category (e.g., 'explanation', 'scaffolding', 'assessment', 'challenge', 'remediation')"
+    )
+    strategy_type: Optional[str] = Field(
+        default=None,
+        description="Granular strategy subtype (e.g., 'analogy', 'visual', 'first_principles', 'worked_example')"
+    )
+    concept_domain: Optional[str] = Field(
+        default="machine_learning",
+        description="Subject domain of the concept"
+    )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional resolved context properties"
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+
+class StrategyEffectivenessRecord(BaseModel):
+    """Corresponds to learner_strategy_effectiveness table."""
+    user_id: int = Field(..., description="User/Student ID (BIGINT)")
+    strategy_category: str = Field(..., description="Strategy category (e.g. explanation)")
+    strategy_type: str = Field(..., description="Specific strategy type (e.g. analogy, visual)")
+    concept_domain: str = Field(default="general", description="Subject concept domain")
+    times_used: int = Field(default=0, ge=0, description="Cumulative times this strategy type was deployed")
+    times_led_to_mastery: int = Field(default=0, ge=0, description="Times this strategy led to mastery")
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+        description="ISO 8601 UTC timestamp"
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @property
+    def effectiveness_ratio(self) -> float:
+        """Ratio of times led to mastery over times used. Returns 0.0 if never used."""
+        return (self.times_led_to_mastery / self.times_used) if self.times_used > 0 else 0.0
+
 
 
 class QuizQuestion(BaseModel):
