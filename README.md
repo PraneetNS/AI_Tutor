@@ -100,23 +100,76 @@ pip install -r requirements.txt
 python -m pytest -v
 ```
 
-### 3. Run Interactive Terminal Demo
-```bash
-python demo_ai_tutor.py
-```
-
-### 4. Start Backend API Server
+### 3. Start FastAPI Service
 ```bash
 uvicorn ai_tutor.api:app --reload --port 8000
 ```
 
-### 5. Start 3D React Frontend
+### 4. Run Frontend Development Server
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Open **`http://localhost:5173`** in your browser to experience the 3D learning environment!
+
+---
+
+## 🛠️ CLI Toolkit
+
+The `ai_tutor` package provides a rich command-line interface for offline tutoring, graph inspection, and BKT simulation:
+
+```bash
+# Display summary of curriculum DAG
+python -m ai_tutor.cli graph-info --domain machine_learning
+
+# Simulate Bayesian Knowledge Tracing transitions on an answer streak
+python -m ai_tutor.cli simulate-bkt --answers 1,1,0,1 --p-l0 0.30
+
+# Export curriculum graph to JSON, DOT, or Cytoscape format
+python -m ai_tutor.cli export-graph --format dot --output curriculum.dot
+
+# Evaluate text safety and anti-hallucination guardrails
+python -m ai_tutor.cli eval-guardrail --text "The derivative of x^2 is 2*x"
+
+# Query the AI tutor directly from terminal
+python -m ai_tutor.cli ask --question "Can you explain backpropagation in simple terms?"
+```
+
+---
+
+## 📊 Monitoring & Telemetry
+
+Prometheus-compatible metrics are exposed at `GET /metrics`:
+- `http_requests_total{endpoint="..."}`: Request counter per endpoint
+- `http_request_duration_seconds`: Request latency summary and distribution
+- `chat_turns_total{pedagogy_mode="..."}`: Dialogue volume by pedagogy mode (socratic, direct, off_topic)
+- `student_feedback_total{rating="..."}`: User satisfaction feedback histogram
+
+---
+
+## 📡 REST API Reference
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/ai/chat` | `POST` | Processes student query through 6-stage Socratic pipeline |
+| `/api/concept-graph` | `GET` | Returns 3D curriculum nodes and edges (`?domain=python_programming`) |
+| `/api/learner/{id}/mastery` | `GET` | Fetches learner BKT mastery state, active misconceptions & stats |
+| `/api/learner/{id}/interaction` | `POST` | Records learning event and updates BKT mastery probabilities |
+| `/api/assessment/generate-quiz` | `POST` | Generates targeted formative quiz question for a concept |
+| `/api/assessment/grade-answer` | `POST` | Evaluates free-text response, detects misconceptions & scores |
+| `/api/feedback` | `POST` | Submits learner rating and helpfulness tags |
+| `/api/feedback/summary` | `GET` | Returns aggregated rating averages and tag distributions |
+| `/metrics` | `GET` | Prometheus telemetry metrics |
+
+---
+
+## ⚡ Performance Benchmarks
+
+Run the automated evaluation benchmark suite:
+
+```bash
+python scripts/benchmark_tutor.py data/eval_golden_dataset.json
+```
 
 ---
 
