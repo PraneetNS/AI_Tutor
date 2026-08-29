@@ -34,7 +34,9 @@ from .models import (
     CurriculumPosition,
     RootCauseDiagnosis,
     StrategyEffectivenessRecord,
+    EvaluationResult,
 )
+
 from .strategy_engine import (
     STRATEGY_TAXONOMY,
     BaseStrategyEffectivenessStore,
@@ -42,6 +44,11 @@ from .strategy_engine import (
     PostgresStrategyEffectivenessStore,
     StrategyEngine,
 )
+from .answer_evaluator import (
+    AnswerEvaluator,
+    CONCEPT_KEYWORD_ALIASES,
+)
+
 
 from .concept_graph import (
     BaseConceptGraphStore,
@@ -301,5 +308,10 @@ __all__ = [
     "InMemoryStrategyEffectivenessStore",
     "PostgresStrategyEffectivenessStore",
     "StrategyEngine",
+    "EvaluationResult",
+    "AnswerEvaluator",
+    "CONCEPT_KEYWORD_ALIASES",
 ]
+
+
 

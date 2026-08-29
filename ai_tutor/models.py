@@ -414,6 +414,24 @@ class AssessmentGrade(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
+class EvaluationResult(BaseModel):
+    """Result produced by AnswerEvaluator."""
+    correct: bool = Field(..., description="Whether the response is conceptually correct")
+    concepts_touched: List[str] = Field(default_factory=list, description="Concepts identified in student response")
+    partial_credit: float = Field(default=0.0, ge=0.0, le=1.0, description="Partial credit score between 0.0 and 1.0")
+    feedback: str = Field(default="", description="Diagnostic feedback explaining evaluation")
+    is_mastered: bool = Field(default=False, description="Whether this response demonstrated mastery")
+    misconceptions_detected: List[str] = Field(default_factory=list, description="Misconceptions detected if any")
+    updated_p_known: Optional[float] = Field(default=None, description="Updated BKT probability of mastery if updated")
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    def __getitem__(self, item: str) -> Any:
+        """Allow dict-style key access for backward compatibility."""
+        return getattr(self, item)
+
+
+
 
 
 
