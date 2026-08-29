@@ -303,3 +303,143 @@ class TestTutorReasonerFullTurn:
         result = reasoner.reason_turn(context=context, strategy_override=strategy)
         assert result.answer == "Mocked tutor answer"
         mock_tutor.generate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 5. Seven-Stage Explicit Architecture Tests
+# ---------------------------------------------------------------------------
+
+class TestSevenStageTutorReasoner:
+    """Tests the 7 independently callable & mockable steps of TutorReasoner."""
+
+    def setup_method(self):
+        self.reasoner = TutorReasoner()
+
+    def test_step1_observe(self):
+        classification = self.reasoner.observe(message="Can you explain the intuition behind backpropagation?")
+        assert classification is not None
+        assert classification.label in ("CONCEPT", "FACTUAL")
+        assert len(self.reasoner.step_traces) == 1
+        assert self.reasoner.step_traces[0].step_name == "Observe"
+
+    def test_step2_model_cached_read(self):
+        user_id = 12345
+        state1, pos1 = self.reasoner.model(user_id=user_id, target_concept="gradient_descent")
+        assert state1.student_id == "12345"
+
+        # Subsequent read should hit the in-memory cache
+        state2, pos2 = self.reasoner.model(user_id=user_id, target_concept="gradient_descent")
+        assert state2 is state1
+
+    def test_step3_plan(self):
+        strategy = self.reasoner.plan(
+            target_concept="loss_functions",
+            concept_domain="machine_learning",
+            user_id=12345,
+            consecutive_failures=0
+        )
+        assert strategy is not None
+        assert strategy.strategy_category in ("scaffolding", "explanation", "assessment", "challenge", "remediation")
+        assert strategy.strategy_type is not None
+
+    def test_step4_teach_dispatch(self):
+        context = _build_mock_context(student_message="Teach me about gradient descent")
+        strategy = TeachingStrategy(
+            recommendation=StrategyAction.GUIDE,
+            strategy_category="scaffolding",
+            strategy_type="leading_question",
+            target_concept="gradient_descent",
+            rationale="Prompt socratic thinking"
+        )
+        answer, meta, agent_name = self.reasoner.teach(context=context, strategy=strategy)
+        assert isinstance(answer, str)
+        assert len(answer) > 0
+        assert agent_name == "TutorAgent"
+
+    def test_step5_assess(self):
+        eval_result = self.reasoner.assess(
+            student_response="The loss function computes MSE between target and predicted values.",
+            expected_concepts=["loss_functions"]
+        )
+        assert eval_result.correct is True
+        assert eval_result.partial_credit >= 0.85
+        assert "loss_functions" in eval_result.concepts_touched
+
+    def test_step6_adapt_never_repeats_twice_failed_strategy(self):
+        """Adapt picks a different strategy_type and never repeats one that failed 2x in a row."""
+        eval_fail = self.reasoner.assess(
+            student_response="I don't know.",
+            expected_concepts=["backpropagation"]
+        )
+        assert eval_fail.is_mastered is False
+
+        curr_strat = TeachingStrategy(
+            recommendation=StrategyAction.EXPLAIN,
+            strategy_category="explanation",
+            strategy_type="analogy",
+            target_concept="backpropagation",
+            consecutive_failures=2,
+            rationale="Explaining backprop"
+        )
+
+        # Failure history where 'analogy' already failed twice consecutively
+        failure_history = ["analogy", "analogy"]
+
+        ped_state, new_strat = self.reasoner.adapt_strategy(
+            eval_result=eval_fail,
+            current_strategy=curr_strat,
+            failure_history_for_concept=failure_history,
+            concept_domain="machine_learning",
+            user_id=12345
+        )
+
+        assert ped_state.stuck is True
+        assert new_strat is not None
+        # Must NOT repeat 'analogy', should switch to 'visual' or next candidate
+        assert new_strat.strategy_type != "analogy"
+        assert new_strat.strategy_type in ("visual", "worked_example", "first_principles")
+
+    def test_step7_remember_sync_and_async(self):
+        strat = TeachingStrategy(
+            recommendation=StrategyAction.GUIDE,
+            strategy_category="explanation",
+            strategy_type="worked_example",
+            target_concept="backpropagation",
+            rationale="Example"
+        )
+        eval_success = self.reasoner.assess(
+            student_response="Backprop uses chain rule to compute gradients of the loss function.",
+            expected_concepts=["backpropagation"]
+        )
+
+        # Synchronous remember execution
+        res_sync = self.reasoner.remember(
+            user_id=9999,
+            strategy=strat,
+            eval_result=eval_success,
+            concept_domain="machine_learning",
+            async_exec=False
+        )
+        assert res_sync["is_mastered"] == eval_success.is_mastered
+
+        # Asynchronous remember execution (non-blocking)
+        res_async = self.reasoner.remember(
+            user_id=9999,
+            strategy=strat,
+            eval_result=eval_success,
+            concept_domain="machine_learning",
+            async_exec=True
+        )
+        assert res_async["status"] == "dispatched_async"
+
+    def test_session_replay_contains_all_executed_steps(self):
+        context = _build_mock_context(student_message="Explain gradient descent")
+        self.reasoner.reason_turn(context=context)
+
+        replay = self.reasoner.get_session_replay()
+        assert len(replay) >= 3
+        step_names = [r["step_name"] for r in replay]
+        assert "Observe" in step_names
+        assert "Model" in step_names
+        assert "Teach" in step_names
+
