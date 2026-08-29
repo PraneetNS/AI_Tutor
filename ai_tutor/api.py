@@ -1,13 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any, List
 import os
+import time
 
 from .models import AIChatRequest, AIChatResponse
 from .pipeline import TutorPipeline
 from .knowledge_source import MockKnowledgeSource
 from .llm_client import MockLLMClient, OpenAILLMClient
 from .concept_graph import create_ml_concept_graph, ML_CONCEPTS, ML_EDGES
+from .telemetry import metrics
 
 
 def create_app(pipeline: Optional[TutorPipeline] = None) -> FastAPI:
@@ -40,11 +42,20 @@ def create_app(pipeline: Optional[TutorPipeline] = None) -> FastAPI:
         return pipeline
 
     @app.get(
+        "/metrics",
+        summary="Prometheus Metrics Endpoint",
+        description="Returns Prometheus-formatted metrics on request latencies, counts, and guardrail stats."
+    )
+    def get_metrics():
+        return Response(content=metrics.generate_prometheus_text(), media_type="text/plain; version=0.0.4")
+
+    @app.get(
         "/api/concept-graph",
         summary="Get Knowledge Constellation Concept Graph",
         description="Returns curriculum nodes (mastered, in_progress, locked) and prerequisite edges."
     )
     def get_concept_graph() -> Dict[str, Any]:
+        metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/concept-graph"})
         # Formats the nodes and edges for KnowledgeConstellation
         nodes = []
         for c in ML_CONCEPTS:
@@ -81,9 +92,16 @@ def create_app(pipeline: Optional[TutorPipeline] = None) -> FastAPI:
         request: AIChatRequest,
         pipe: TutorPipeline = Depends(get_pipeline)
     ) -> AIChatResponse:
+        start_time = time.time()
+        metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/ai/chat"})
         try:
-            return pipe.process(request)
+            res = pipe.process(request)
+            duration = time.time() - start_time
+            metrics.observe_latency("http_request_duration_seconds", duration, labels={"endpoint": "/api/ai/chat"})
+            metrics.inc_counter("chat_turns_total", labels={"scaffolding": res.scaffolding_level.value})
+            return res
         except Exception as e:
+            metrics.inc_counter("http_errors_total", labels={"endpoint": "/api/ai/chat"})
             raise HTTPException(status_code=500, detail=str(e))
 
     return app
@@ -91,3 +109,4 @@ def create_app(pipeline: Optional[TutorPipeline] = None) -> FastAPI:
 
 # Default app instance
 app = create_app()
+
