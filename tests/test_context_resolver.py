@@ -173,3 +173,89 @@ class TestContextResolver:
         assert strategy.misconception_to_address is None
         assert strategy.target_mastery is None
         assert strategy.hint_budget_remaining == 3
+
+    def test_concurrent_fetches_with_stale_fallback_on_timeout(self):
+        """If a fetch times out (>150ms), fallback to cache and mark possibly_stale."""
+        resolver = ContextResolver(fetch_timeout_ms=50)
+
+        # Populate initial cached learner state
+        cached_state = LearnerState(
+            student_id="user_timeout",
+            concept_mastery={"Backpropagation": ConceptMastery(concept="Backpropagation", mastery=0.75)}
+        )
+        resolver._cached_learner_states["user_timeout"] = cached_state
+
+        # Mock get_learner_state to delay 200ms (> 50ms timeout)
+        def slow_fetch(uid, delay=0.0):
+            import time
+            time.sleep(0.2)
+            return LearnerState(student_id=str(uid))
+
+        resolver.get_learner_state = slow_fetch
+
+        # Resolve context
+        ctx = resolver.resolve(user_id="user_timeout", target_concept="Backpropagation")
+        assert ctx.possibly_stale.get("learner_state") is True
+        assert ctx.learning_context.learner_state.concept_mastery["Backpropagation"].mastery == 0.75
+
+    def test_conservative_strategy_suppresses_advance_on_stale_mastery(self):
+        """Downstream StrategyEngine does not recommend 'challenge'/advance on stale mastery data."""
+        resolver = ContextResolver()
+        state = LearnerState(
+            student_id="user_stale",
+            concept_mastery={"Neural Networks": ConceptMastery(concept="Neural Networks", mastery=0.98)}
+        )
+
+        # 1. Non-stale: should recommend CHALLENGE (>0.90)
+        ctx_fresh = resolver.resolve(learner_state=state, target_concept="Neural Networks")
+        assert ctx_fresh.recommendation == StrategyAction.CHALLENGE
+
+        # 2. Stale: should suppress CHALLENGE and fall back conservatively to QUIZ or GUIDE
+        resolver._cached_learner_states["user_stale"] = state
+        def slow_fetch(uid, delay=0.0):
+            import time
+            time.sleep(0.2)
+            return state
+
+        resolver.fetch_timeout_s = 0.05
+        resolver.get_learner_state = slow_fetch
+
+        ctx_stale = resolver.resolve(user_id="user_stale", target_concept="Neural Networks")
+        assert ctx_stale.possibly_stale.get("learner_state") is True
+        assert ctx_stale.recommendation != StrategyAction.CHALLENGE
+        assert ctx_stale.recommendation in (StrategyAction.QUIZ, StrategyAction.GUIDE)
+
+    def test_conditional_rag_gating(self):
+        """RAG is queried only when course_id is present, and skipped when course_id is None."""
+        resolver = ContextResolver()
+
+        # Without course_id -> No RAG chunks
+        ctx_no_course = resolver.resolve(
+            user_id="user_1",
+            course_id=None,
+            student_message="Explain backprop"
+        )
+        assert len(ctx_no_course.knowledge_context.chunks) == 0
+        assert len(ctx_no_course.knowledge_context.citations) == 0
+
+        # With course_id -> RAG chunks retrieved
+        ctx_with_course = resolver.resolve(
+            user_id="user_1",
+            course_id=101,
+            student_message="Explain supervised learning"
+        )
+        assert len(ctx_with_course.knowledge_context.chunks) > 0
+        assert len(ctx_with_course.knowledge_context.citations) > 0
+
+    def test_budget_manager_prompt_assembly(self):
+        """Prompt is assembled via BudgetManager into assembled_prompt."""
+        resolver = ContextResolver()
+        ctx = resolver.resolve(
+            user_id="user_1",
+            course_id=101,
+            student_message="What is a neural network?"
+        )
+        assert ctx.assembled_prompt is not None
+        assert len(ctx.assembled_prompt) > 100
+
+

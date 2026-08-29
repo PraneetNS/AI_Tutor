@@ -615,11 +615,12 @@ class LearningContext(BaseModel):
     learner_state: Optional[LearnerState] = Field(default=None, description="Current full LearnerState snapshot")
     target_concept: Optional[str] = Field(default=None, description="Target concept being studied")
     target_mastery: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Estimated mastery score (0-1)")
-    teaching_strategy: Optional[TeachingStrategy] = Field(default=None, description="Recommended teaching strategy")
+    teaching_strategy: Optional[Union[TeachingStrategy, Any]] = Field(default=None, description="Recommended teaching strategy")
     active_misconceptions: List[Misconception] = Field(default_factory=list, description="Active identified misconceptions")
     behavior_summary: Optional[Dict[str, Any]] = Field(default=None, description="Summary of behavioral tendencies")
 
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, arbitrary_types_allowed=True)
+
 
 
 class KnowledgeContext(BaseModel):
@@ -644,12 +645,68 @@ class OrchestratedContext(BaseModel):
     knowledge_context: KnowledgeContext = Field(..., description="Retrieved course material context")
     course_id: Optional[int] = Field(default=None, description="Active LMS course ID")
     lecture_id: Optional[int] = Field(default=None, description="Active LMS lecture ID")
+    possibly_stale: Dict[str, bool] = Field(
+        default_factory=dict,
+        description="Flags indicating whether any context source had to fall back to cached data due to timeouts or errors"
+    )
+    assembled_prompt: Optional[str] = Field(
+        default=None,
+        description="Final budget-managed prompt text ready for LLM generation"
+    )
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
         description="ISO 8601 UTC timestamp of context orchestration"
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @property
+    def recommendation(self) -> Optional[StrategyAction]:
+        strat = self.learning_context.teaching_strategy
+        return strat.recommendation if strat else None
+
+    @property
+    def target_concept(self) -> Optional[str]:
+        strat = self.learning_context.teaching_strategy
+        return strat.target_concept if strat else self.learning_context.target_concept
+
+    @property
+    def target_mastery(self) -> Optional[float]:
+        strat = self.learning_context.teaching_strategy
+        return strat.target_mastery if strat else self.learning_context.target_mastery
+
+    @property
+    def misconception_to_address(self) -> Optional[Misconception]:
+        strat = self.learning_context.teaching_strategy
+        return strat.misconception_to_address if strat else None
+
+    @property
+    def hint_budget_remaining(self) -> int:
+        strat = self.learning_context.teaching_strategy
+        return strat.hint_budget_remaining if strat else 3
+
+    @property
+    def consecutive_failures(self) -> int:
+        strat = self.learning_context.teaching_strategy
+        return strat.consecutive_failures if strat else 0
+
+    @property
+    def curriculum_position(self) -> Optional[CurriculumPosition]:
+        strat = self.learning_context.teaching_strategy
+        return strat.curriculum_position if strat else None
+
+    @property
+    def root_cause_diagnosis(self) -> Optional[RootCauseDiagnosis]:
+        strat = self.learning_context.teaching_strategy
+        return strat.root_cause_diagnosis if strat else None
+
+    @property
+    def rationale(self) -> str:
+        strat = self.learning_context.teaching_strategy
+        return strat.rationale if strat else ""
+
+
+
 
     def to_prompt_sections(self) -> Dict[str, str]:
         """
@@ -660,6 +717,9 @@ class OrchestratedContext(BaseModel):
         import json
 
         strategy = self.learning_context.teaching_strategy
+        if hasattr(strategy, "learning_context") and strategy.learning_context:
+            strategy = strategy.learning_context.teaching_strategy
+
 
         # 1. Mastery snapshot (top-N lowest-mastery concepts + active misconceptions)
         concepts_list = []

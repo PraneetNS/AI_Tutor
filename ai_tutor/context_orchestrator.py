@@ -193,7 +193,7 @@ class LearningAgent(BaseLearningAgent):
             }
 
         # Resolve teaching strategy
-        strategy: TeachingStrategy = self.context_resolver.resolve(
+        resolved = self.context_resolver.resolve(
             learner_state=learner_state,
             target_concept=target_concept,
             course_id=course_id,
@@ -202,6 +202,7 @@ class LearningAgent(BaseLearningAgent):
             consecutive_failures=consecutive_failures,
             hint_budget_remaining=hint_budget_remaining
         )
+        strategy = resolved.learning_context.teaching_strategy if hasattr(resolved, "learning_context") and resolved.learning_context else resolved
 
         return LearningContext(
             student_id=str(student_id) if student_id else None,
@@ -212,6 +213,7 @@ class LearningAgent(BaseLearningAgent):
             active_misconceptions=active_misconceptions,
             behavior_summary=behavior_summary
         )
+
 
 
 # ---------------------------------------------------------------------------
