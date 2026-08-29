@@ -23,6 +23,7 @@ from .learner_model import LearnerModelEngine
 from .learner_store import InMemoryLearnerStateStore
 from .quiz_agent import QuizAgent
 from .assessment_agent import AssessmentAgent
+from .feedback_collector import FeedbackCollector, FeedbackItem
 from .telemetry import metrics
 
 
@@ -30,7 +31,8 @@ def create_app(
     pipeline: Optional[TutorPipeline] = None,
     learner_engine: Optional[LearnerModelEngine] = None,
     quiz_agent: Optional[QuizAgent] = None,
-    assessment_agent: Optional[AssessmentAgent] = None
+    assessment_agent: Optional[AssessmentAgent] = None,
+    feedback_collector: Optional[FeedbackCollector] = None
 ) -> FastAPI:
 
     app = FastAPI(
@@ -65,6 +67,9 @@ def create_app(
     if assessment_agent is None:
         assessment_agent = AssessmentAgent()
 
+    if feedback_collector is None:
+        feedback_collector = FeedbackCollector()
+
     ml_graph = create_ml_concept_graph()
 
     def get_pipeline() -> TutorPipeline:
@@ -78,6 +83,10 @@ def create_app(
 
     def get_assessment_agent() -> AssessmentAgent:
         return assessment_agent
+
+    def get_feedback_collector() -> FeedbackCollector:
+        return feedback_collector
+
 
 
     @app.get(
@@ -305,12 +314,37 @@ def create_app(
             mode_str = res.pedagogy_mode.value if hasattr(res.pedagogy_mode, "value") else str(res.pedagogy_mode or "direct")
             metrics.inc_counter("chat_turns_total", labels={"pedagogy_mode": mode_str})
             return res
-
         except Exception as e:
             metrics.inc_counter("http_errors_total", labels={"endpoint": "/api/ai/chat"})
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post(
+        "/api/feedback",
+        summary="Submit Student Feedback",
+        description="Records explicit learner feedback, rating, and qualitative tags on tutor responses."
+    )
+    def submit_feedback_endpoint(
+        item: FeedbackItem,
+        collector: FeedbackCollector = Depends(get_feedback_collector)
+    ) -> Dict[str, Any]:
+        metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/feedback"})
+        metrics.inc_counter("student_feedback_total", labels={"rating": str(item.rating)})
+        saved = collector.record(item)
+        return {"status": "success", "session_id": saved.session_id, "rating": saved.rating}
+
+    @app.get(
+        "/api/feedback/summary",
+        summary="Get Feedback Summary Analytics",
+        description="Returns aggregated rating averages, helpfulness percentage, and tag distributions."
+    )
+    def get_feedback_summary_endpoint(
+        collector: FeedbackCollector = Depends(get_feedback_collector)
+    ) -> Dict[str, Any]:
+        return collector.get_summary()
+
     return app
+
+
 
 
 # Default app instance
