@@ -161,9 +161,14 @@ class ConceptGraph:
     def store(self) -> BaseConceptGraphStore:
         return self._store
 
+    def get_concept(self, concept_id: str) -> Optional[ConceptNode]:
+        """Return the concept node or None if not registered."""
+        return self._store.get_concept(concept_id)
+
     # ------------------------------------------------------------------
     # 1. Prerequisite Queries
     # ------------------------------------------------------------------
+
 
     def get_direct_prerequisites(self, concept_id: str) -> List[ConceptNode]:
         """Return direct (level-1) prerequisite concepts."""
