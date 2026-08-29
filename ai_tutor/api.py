@@ -4,20 +4,35 @@ from typing import Optional, Dict, Any, List
 import os
 import time
 
-from .models import AIChatRequest, AIChatResponse, LearningEvent, LearningEventType
+from .models import (
+    AIChatRequest,
+    AIChatResponse,
+    LearningEvent,
+    LearningEventType,
+    QuizQuestion,
+    AssessmentGrade,
+    TeachingStrategy,
+    StrategyAction
+)
+
 from .pipeline import TutorPipeline
 from .knowledge_source import MockKnowledgeSource
 from .llm_client import MockLLMClient, OpenAILLMClient
 from .concept_graph import create_ml_concept_graph, ML_CONCEPTS, ML_EDGES
 from .learner_model import LearnerModelEngine
 from .learner_store import InMemoryLearnerStateStore
+from .quiz_agent import QuizAgent
+from .assessment_agent import AssessmentAgent
 from .telemetry import metrics
 
 
 def create_app(
     pipeline: Optional[TutorPipeline] = None,
-    learner_engine: Optional[LearnerModelEngine] = None
+    learner_engine: Optional[LearnerModelEngine] = None,
+    quiz_agent: Optional[QuizAgent] = None,
+    assessment_agent: Optional[AssessmentAgent] = None
 ) -> FastAPI:
+
     app = FastAPI(
         title="AI Tutor Service",
         description="Stateless pedagogical tutoring service with hybrid knowledge retrieval & 3D visualization",
@@ -44,6 +59,12 @@ def create_app(
     if learner_engine is None:
         learner_engine = LearnerModelEngine(store=InMemoryLearnerStateStore())
 
+    if quiz_agent is None:
+        quiz_agent = QuizAgent()
+
+    if assessment_agent is None:
+        assessment_agent = AssessmentAgent()
+
     ml_graph = create_ml_concept_graph()
 
     def get_pipeline() -> TutorPipeline:
@@ -51,6 +72,13 @@ def create_app(
 
     def get_learner_engine() -> LearnerModelEngine:
         return learner_engine
+
+    def get_quiz_agent() -> QuizAgent:
+        return quiz_agent
+
+    def get_assessment_agent() -> AssessmentAgent:
+        return assessment_agent
+
 
     @app.get(
         "/metrics",
@@ -172,10 +200,58 @@ def create_app(
 
 
     @app.post(
+        "/api/assessment/generate-quiz",
+        response_model=QuizQuestion,
+        summary="Generate Adaptive Quiz Question",
+        description="Generates a targeted formative question targeting specific concept and difficulty."
+    )
+    def generate_quiz_endpoint(
+        payload: Dict[str, Any] = Body(...),
+        agent: QuizAgent = Depends(get_quiz_agent)
+    ) -> QuizQuestion:
+        metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/assessment/generate-quiz"})
+        concept = payload.get("concept", "Machine Learning Basics")
+        difficulty = payload.get("difficulty", "medium")
+        strategy = TeachingStrategy(
+            recommendation=StrategyAction.QUIZ,
+            rationale="Adaptive diagnostic quiz requested",
+            target_concept=concept,
+            difficulty_adjustment=difficulty
+        )
+        return agent.generate(strategy=strategy)
+
+
+
+
+    @app.post(
+        "/api/assessment/grade-answer",
+        response_model=AssessmentGrade,
+        summary="Grade Student Answer",
+        description="Evaluates student response, detects misconceptions, and returns formative assessment."
+    )
+    def grade_answer_endpoint(
+        payload: Dict[str, Any] = Body(...),
+        agent: AssessmentAgent = Depends(get_assessment_agent)
+    ) -> AssessmentGrade:
+        metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/assessment/grade-answer"})
+        student_id = payload.get("student_id", "anonymous")
+        concept = payload.get("concept", "general")
+        answer = payload.get("answer", "")
+        hints_used = payload.get("hints_used", 0)
+
+        return agent.grade(
+            student_answer=answer,
+            expected_concept=concept,
+            hints_used=hints_used,
+            student_id=student_id
+        )
+
+    @app.post(
         "/api/learner/{student_id}/reset",
         summary="Reset Learner State",
         description="Clears all mastery, history, and behavioral stats for a learner."
     )
+
     def reset_learner_state(
         student_id: str,
         engine: LearnerModelEngine = Depends(get_learner_engine)
