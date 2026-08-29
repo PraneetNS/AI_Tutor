@@ -93,9 +93,32 @@ def create_app(
         summary="Get Knowledge Constellation Concept Graph",
         description="Returns curriculum nodes (mastered, in_progress, locked) and prerequisite edges."
     )
-    def get_concept_graph() -> Dict[str, Any]:
+    def get_concept_graph(domain: str = "machine_learning") -> Dict[str, Any]:
         metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/concept-graph"})
-        # Formats the nodes and edges for KnowledgeConstellation
+        if domain in ["python_programming", "data_structures"]:
+            from .curriculum_catalog import CurriculumCatalog
+            concepts, edges_raw = CurriculumCatalog.get_concepts_and_edges(domain)
+            nodes = [
+                {
+                    "id": c.concept_id,
+                    "name": c.name,
+                    "domain": c.domain,
+                    "status": "mastered" if idx < 2 else "in_progress" if idx < 5 else "locked",
+                    "mastery": 0.9 if idx < 2 else 0.5 if idx < 5 else 0.1,
+                }
+                for idx, c in enumerate(concepts)
+            ]
+            edges = [
+                {"source": e.prerequisite_id, "target": e.concept_id, "weight": e.weight}
+                for e in edges_raw
+            ]
+            return {
+                "domain": domain,
+                "nodes": nodes,
+                "edges": edges,
+            }
+
+        # Default machine_learning
         nodes = []
         for c in ML_CONCEPTS:
             nodes.append({
@@ -120,6 +143,7 @@ def create_app(
             "nodes": nodes,
             "edges": edges,
         }
+
 
     @app.get(
         "/api/learner/{student_id}/mastery",
