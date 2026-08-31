@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Depends, HTTPException, Response, Body
+from fastapi import FastAPI, Depends, HTTPException, Response, Request, Body
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any, List
 import os
 import time
+import uuid
+import logging
 
 from .models import (
     AIChatRequest,
@@ -12,10 +15,11 @@ from .models import (
     QuizQuestion,
     AssessmentGrade,
     TeachingStrategy,
-    StrategyAction
+    StrategyAction,
+    PedagogyMode,
 )
 
-from .pipeline import TutorPipeline
+from .pipeline import TutorPipeline, SAFE_IN_CHARACTER_FALLBACK
 from .knowledge_source import MockKnowledgeSource
 from .llm_client import MockLLMClient, OpenAILLMClient
 from .concept_graph import create_ml_concept_graph, ML_CONCEPTS, ML_EDGES
@@ -25,6 +29,13 @@ from .quiz_agent import QuizAgent
 from .assessment_agent import AssessmentAgent
 from .feedback_collector import FeedbackCollector, FeedbackItem
 from .telemetry import metrics
+from .config import Settings, get_settings
+from .log_scrubber import install_log_scrubber
+
+logger = logging.getLogger("ai_tutor.api")
+
+# Ensure log scrubber is installed
+install_log_scrubber()
 
 
 def create_app(
@@ -32,8 +43,14 @@ def create_app(
     learner_engine: Optional[LearnerModelEngine] = None,
     quiz_agent: Optional[QuizAgent] = None,
     assessment_agent: Optional[AssessmentAgent] = None,
-    feedback_collector: Optional[FeedbackCollector] = None
+    feedback_collector: Optional[FeedbackCollector] = None,
+    settings: Optional[Settings] = None,
 ) -> FastAPI:
+
+    cfg = settings or get_settings()
+
+    # Fast-fail at startup if configured primary/fallback provider missing required keys
+    cfg.validate_startup()
 
     app = FastAPI(
         title="AI Tutor Service",
@@ -41,17 +58,66 @@ def create_app(
         version="1.0.0"
     )
 
+    cors_origins = cfg.cors_origins if isinstance(cfg.cors_origins, list) else ["*"]
+
     # Enable CORS for Vite frontend
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins if cors_origins else ["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    # Middleware for Request ID propagation
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+        request.state.request_id = req_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+
+    # Global Exception Handler
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        req_id = getattr(request.state, "request_id", None) or f"req_{uuid.uuid4().hex[:12]}"
+        logger.error(
+            "[API GATEWAY GLOBAL EXCEPTION] request_id=%s path=%s method=%s error=%s",
+            req_id,
+            request.url.path,
+            request.method,
+            exc,
+            exc_info=True
+        )
+        metrics.inc_counter("http_errors_total", labels={"endpoint": request.url.path})
+
+        if request.url.path == "/api/ai/chat":
+            return JSONResponse(
+                status_code=200,
+                headers={"X-Request-ID": req_id},
+                content={
+                    "answer": SAFE_IN_CHARACTER_FALLBACK,
+                    "session_id": "sess_fallback",
+                    "pedagogy_mode": "direct",
+                    "hint_level": 0,
+                    "knowledge_source_used": None,
+                    "sources": [],
+                }
+            )
+
+        return JSONResponse(
+            status_code=500,
+            headers={"X-Request-ID": req_id},
+            content={
+                "status": "error",
+                "message": SAFE_IN_CHARACTER_FALLBACK,
+                "request_id": req_id,
+            }
+        )
+
     if pipeline is None:
-        llm = OpenAILLMClient() if os.getenv("OPENAI_API_KEY") else MockLLMClient()
+        llm = OpenAILLMClient(api_key=cfg.openai_api_key) if cfg.openai_api_key else MockLLMClient()
         ks = MockKnowledgeSource()
         pipeline = TutorPipeline(
             knowledge_source=ks,
@@ -300,15 +366,19 @@ def create_app(
         summary="AI Chat Endpoint",
         description="Processes student question through the 6-stage pedagogical pipeline."
     )
-
     def chat_endpoint(
         request: AIChatRequest,
+        raw_req: Request = None,
         pipe: TutorPipeline = Depends(get_pipeline)
     ) -> AIChatResponse:
         start_time = time.time()
         metrics.inc_counter("http_requests_total", labels={"endpoint": "/api/ai/chat"})
+        req_id = getattr(getattr(raw_req, "state", None), "request_id", None) or f"req_{uuid.uuid4().hex[:12]}"
+        user_id = str(request.student_id or "anonymous")
+        session_id = request.session_id or f"sess_{uuid.uuid4().hex[:10]}"
+
         try:
-            res = pipe.process(request)
+            res = pipe.process(request, request_id=req_id)
             duration = time.time() - start_time
             metrics.observe_latency("http_request_duration_seconds", duration, labels={"endpoint": "/api/ai/chat"})
             mode_str = res.pedagogy_mode.value if hasattr(res.pedagogy_mode, "value") else str(res.pedagogy_mode or "direct")
@@ -316,7 +386,21 @@ def create_app(
             return res
         except Exception as e:
             metrics.inc_counter("http_errors_total", labels={"endpoint": "/api/ai/chat"})
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(
+                "[CHAT ENDPOINT EXCEPTION CAUGHT] request_id=%s user_id=%s session_id=%s failed_step=pipeline error=%s",
+                req_id,
+                user_id,
+                session_id,
+                e,
+                exc_info=True
+            )
+            return AIChatResponse(
+                answer=SAFE_IN_CHARACTER_FALLBACK,
+                session_id=session_id,
+                pedagogy_mode=PedagogyMode.DIRECT,
+                hint_level=0,
+                sources=[]
+            )
 
     @app.post(
         "/api/feedback",
