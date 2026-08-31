@@ -223,8 +223,9 @@ class PostgresStrategyEffectivenessStore(BaseStrategyEffectivenessStore):
     WHERE user_id = %s AND strategy_category = %s AND concept_domain = %s;
     """
 
-    def __init__(self, postgres_dsn: str) -> None:
+    def __init__(self, postgres_dsn: str, db_timeout: float = 5.0) -> None:
         self.postgres_dsn = postgres_dsn
+        self.db_timeout = db_timeout
 
     def get_effectiveness(
         self,
@@ -244,7 +245,7 @@ class PostgresStrategyEffectivenessStore(BaseStrategyEffectivenessStore):
     ) -> Dict[str, StrategyEffectivenessRecord]:
         try:
             import psycopg2
-            with psycopg2.connect(self.postgres_dsn) as conn:
+            with psycopg2.connect(self.postgres_dsn, connect_timeout=int(self.db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         self.SELECT_CATEGORY_SQL,
@@ -285,7 +286,7 @@ class PostgresStrategyEffectivenessStore(BaseStrategyEffectivenessStore):
                 "concept_domain": concept_domain.lower(),
                 "led_to_mastery_int": 1 if led_to_mastery else 0,
             }
-            with psycopg2.connect(self.postgres_dsn) as conn:
+            with psycopg2.connect(self.postgres_dsn, connect_timeout=int(self.db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(self.UPSERT_SQL, params)
                     r = cur.fetchone()
