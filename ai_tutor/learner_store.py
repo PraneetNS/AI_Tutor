@@ -102,11 +102,15 @@ class PostgresRedisLearnerStateStore(BaseLearnerStateStore):
         postgres_dsn: str,
         redis_url: Optional[str] = None,
         cache_ttl_seconds: int = 3600,
+        db_timeout: float = 5.0,
+        redis_timeout: float = 3.0,
         auto_migrate: bool = True
     ) -> None:
         self.postgres_dsn = postgres_dsn
         self.redis_url = redis_url
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.db_timeout = db_timeout
+        self.redis_timeout = redis_timeout
         self._redis_client = None
 
         if auto_migrate:
@@ -116,7 +120,12 @@ class PostgresRedisLearnerStateStore(BaseLearnerStateStore):
         if self._redis_client is None and self.redis_url:
             try:
                 import redis
-                self._redis_client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+                self._redis_client = redis.Redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_timeout=self.redis_timeout,
+                    socket_connect_timeout=self.redis_timeout,
+                )
             except Exception as e:
                 logger.warning(f"Failed to initialize Redis client: {e}")
         return self._redis_client
@@ -124,7 +133,7 @@ class PostgresRedisLearnerStateStore(BaseLearnerStateStore):
     def _migrate(self) -> None:
         try:
             import psycopg2
-            with psycopg2.connect(self.postgres_dsn) as conn:
+            with psycopg2.connect(self.postgres_dsn, connect_timeout=int(self.db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(self.CREATE_TABLE_SQL)
                 conn.commit()
@@ -149,7 +158,7 @@ class PostgresRedisLearnerStateStore(BaseLearnerStateStore):
         # 2. Fall back to Postgres (Source of Truth)
         try:
             import psycopg2
-            with psycopg2.connect(self.postgres_dsn) as conn:
+            with psycopg2.connect(self.postgres_dsn, connect_timeout=int(self.db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(self.SELECT_SQL, (str(student_id),))
                     row = cur.fetchone()
@@ -179,7 +188,7 @@ class PostgresRedisLearnerStateStore(BaseLearnerStateStore):
                 "schema_version": state.schema_version,
                 "updated_at": state.updated_at,
             }
-            with psycopg2.connect(self.postgres_dsn) as conn:
+            with psycopg2.connect(self.postgres_dsn, connect_timeout=int(self.db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(self.UPSERT_SQL, params)
                 conn.commit()
