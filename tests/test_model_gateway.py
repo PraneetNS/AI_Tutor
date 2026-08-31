@@ -249,19 +249,23 @@ class TestModelGatewayIntrospection:
 
 class TestProviderRegistry:
     def test_build_openai_provider(self):
-        provider = _build_provider("openai")
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            provider = _build_provider("openai")
         assert isinstance(provider, OpenAIProvider)
 
     def test_build_anthropic_provider(self):
-        provider = _build_provider("anthropic")
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            provider = _build_provider("anthropic")
         assert isinstance(provider, AnthropicProvider)
 
     def test_build_claude_alias(self):
-        provider = _build_provider("claude")
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            provider = _build_provider("claude")
         assert isinstance(provider, AnthropicProvider)
 
     def test_build_qwen_provider(self):
-        provider = _build_provider("qwen")
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}):
+            provider = _build_provider("qwen")
         assert isinstance(provider, QwenProvider)
 
     def test_build_mock_provider(self):
@@ -297,7 +301,7 @@ class TestProviderEnvVarWiring:
         assert provider.model == "qwen-turbo"
 
     def test_qwen_uses_dashscope_base_url(self):
-        provider = QwenProvider()
+        provider = QwenProvider(api_key="test-key")
         assert "dashscope" in provider.base_url
 
 
