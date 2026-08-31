@@ -117,6 +117,7 @@ from .pipeline import (
     BaseGuardrails,
     DefaultGuardrails,
     TutorPipeline,
+    SAFE_IN_CHARACTER_FALLBACK,
 )
 from .budget_manager import BudgetManager
 from .event_bus import (
@@ -172,6 +173,18 @@ from .model_gateway import (
     GoldenRegressionRunner,
     GoldenRegressionReport,
     GOLDEN_CONVERSATIONS,
+)
+from .config import (
+    Settings,
+    get_settings,
+    reload_settings,
+    MissingApiKeyError,
+)
+from .log_scrubber import (
+    SecretScrubberFilter,
+    install_log_scrubber,
+    scrub_text,
+    API_KEY_PATTERNS,
 )
 from .api import create_app, app
 
@@ -311,6 +324,15 @@ __all__ = [
     "EvaluationResult",
     "AnswerEvaluator",
     "CONCEPT_KEYWORD_ALIASES",
+    "Settings",
+    "get_settings",
+    "reload_settings",
+    "MissingApiKeyError",
+    "SecretScrubberFilter",
+    "install_log_scrubber",
+    "scrub_text",
+    "API_KEY_PATTERNS",
+    "SAFE_IN_CHARACTER_FALLBACK",
 ]
 
 
