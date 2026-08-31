@@ -314,10 +314,12 @@ class PostgresEventBus(BaseEventBus):
         self,
         dsn: str,
         poll_interval_s: float = 2.0,
+        db_timeout: float = 5.0,
         auto_migrate: bool = True
     ) -> None:
         self._dsn = dsn
         self._poll_interval_s = poll_interval_s
+        self._db_timeout = db_timeout
         self._handlers: List[EventHandler] = []
         self._lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
@@ -354,7 +356,7 @@ class PostgresEventBus(BaseEventBus):
             "payload":      psycopg2.extras.Json(event.payload),
         }
 
-        with psycopg2.connect(self._dsn) as conn:
+        with psycopg2.connect(self._dsn, connect_timeout=int(self._db_timeout)) as conn:
             with conn.cursor() as cur:
                 cur.execute(self.INSERT_SQL, params)
             conn.commit()
@@ -388,7 +390,7 @@ class PostgresEventBus(BaseEventBus):
         """Apply DDL (idempotent — uses CREATE IF NOT EXISTS)."""
         try:
             import psycopg2
-            with psycopg2.connect(self._dsn) as conn:
+            with psycopg2.connect(self._dsn, connect_timeout=int(self._db_timeout)) as conn:
                 with conn.cursor() as cur:
                     cur.execute(self.CREATE_TABLE_SQL)
                     cur.execute(self.CREATE_TRIGGER_SQL)
@@ -427,7 +429,7 @@ class PostgresEventBus(BaseEventBus):
         while not self._stop_event.is_set():
             conn = None
             try:
-                conn = psycopg2.connect(self._dsn)
+                conn = psycopg2.connect(self._dsn, connect_timeout=int(self._db_timeout))
                 conn.set_isolation_level(0)   # AUTOCOMMIT — required for LISTEN
                 with conn.cursor() as cur:
                     cur.execute("LISTEN learning_events;")
