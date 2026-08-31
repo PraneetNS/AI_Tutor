@@ -35,6 +35,7 @@ from .models import (
     PedagogyState,
     Role,
 )
+from .config import Settings, get_settings, MissingApiKeyError
 
 logger = logging.getLogger("ai_tutor.model_gateway")
 
@@ -133,10 +134,18 @@ class GPTAdapter(BaseProviderAdapter):
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
+        settings: Optional[Settings] = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        cfg = settings or Settings()
+        resolved_key = api_key or cfg.openai_api_key or os.getenv("OPENAI_API_KEY", "")
+        if not resolved_key or not resolved_key.strip():
+            raise MissingApiKeyError(provider="openai", env_var="OPENAI_API_KEY")
+
+        self.api_key = resolved_key.strip()
+        self.model = model or cfg.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.base_url = base_url or cfg.openai_base_url or os.getenv("OPENAI_BASE_URL")
+        self.timeout = float(timeout if timeout is not None else cfg.model_request_timeout)
 
     def generate(
         self,
@@ -156,7 +165,7 @@ class GPTAdapter(BaseProviderAdapter):
 
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url or None)
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url or None, timeout=self.timeout)
 
             call_kwargs: Dict[str, Any] = {
                 "model": self.model,
@@ -208,9 +217,17 @@ class ClaudeAdapter(BaseProviderAdapter):
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
+        settings: Optional[Settings] = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+        cfg = settings or Settings()
+        resolved_key = api_key or cfg.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        if not resolved_key or not resolved_key.strip():
+            raise MissingApiKeyError(provider="anthropic", env_var="ANTHROPIC_API_KEY")
+
+        self.api_key = resolved_key.strip()
+        self.model = model or cfg.anthropic_model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+        self.timeout = float(timeout if timeout is not None else cfg.model_request_timeout)
 
     def generate(
         self,
@@ -245,7 +262,7 @@ class ClaudeAdapter(BaseProviderAdapter):
 
         try:
             import anthropic
-            client = anthropic.Anthropic(api_key=self.api_key)
+            client = anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout)
 
             call_kwargs: Dict[str, Any] = {
                 "model": self.model,
@@ -303,9 +320,23 @@ class GeminiAdapter(BaseProviderAdapter):
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
+        settings: Optional[Settings] = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        cfg = settings or Settings()
+        resolved_key = (
+            api_key
+            or cfg.gemini_api_key
+            or cfg.google_api_key
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY", "")
+        )
+        if not resolved_key or not resolved_key.strip():
+            raise MissingApiKeyError(provider="gemini", env_var="GEMINI_API_KEY")
+
+        self.api_key = resolved_key.strip()
+        self.model = model or cfg.gemini_model or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        self.timeout = float(timeout if timeout is not None else cfg.model_request_timeout)
 
     def generate(
         self,
@@ -384,10 +415,18 @@ class QwenProvider(BaseProviderAdapter):
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
+        settings: Optional[Settings] = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY", "")
-        self.model = model or os.getenv("QWEN_MODEL", "qwen-plus")
-        self.base_url = base_url or os.getenv("DASHSCOPE_BASE_URL", self._DEFAULT_BASE_URL)
+        cfg = settings or Settings()
+        resolved_key = api_key or cfg.dashscope_api_key or os.getenv("DASHSCOPE_API_KEY", "")
+        if not resolved_key or not resolved_key.strip():
+            raise MissingApiKeyError(provider="qwen", env_var="DASHSCOPE_API_KEY")
+
+        self.api_key = resolved_key.strip()
+        self.model = model or cfg.qwen_model or os.getenv("QWEN_MODEL", "qwen-plus")
+        self.base_url = base_url or cfg.dashscope_base_url or os.getenv("DASHSCOPE_BASE_URL", self._DEFAULT_BASE_URL)
+        self.timeout = float(timeout if timeout is not None else cfg.model_request_timeout)
 
     def generate(
         self,
@@ -397,7 +436,7 @@ class QwenProvider(BaseProviderAdapter):
         **kwargs: Any,
     ) -> ModelResponse:
         from openai import OpenAI
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
         response = client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -489,7 +528,7 @@ ADAPTER_REGISTRY: Dict[str, type] = {
 }
 
 
-def _build_adapter(provider_name: str) -> BaseProviderAdapter:
+def _build_adapter(provider_name: str, settings: Optional[Settings] = None) -> BaseProviderAdapter:
     """Instantiate the adapter registered under provider_name."""
     cls = ADAPTER_REGISTRY.get(provider_name.lower())
     if cls is None:
@@ -497,7 +536,9 @@ def _build_adapter(provider_name: str) -> BaseProviderAdapter:
             f"Unknown provider '{provider_name}'. "
             f"Valid options: {sorted(ADAPTER_REGISTRY)}"
         )
-    return cls()
+    if cls is MockAdapter:
+        return cls()
+    return cls(settings=settings)
 
 
 _build_provider = _build_adapter  # Backwards compatibility alias
@@ -516,6 +557,7 @@ class ModelGateway:
     - Configurable primary provider with optional fallback provider on error/timeout.
     - Strict provider translation separation (zero business logic in adapters).
     - Response type to max_tokens resolution via OUTPUT_BUDGET.
+    - Strict Settings integration: all keys pulled securely from typed Settings.
     """
 
     DEFAULT_PRIMARY = "mock"
@@ -524,12 +566,15 @@ class ModelGateway:
         self,
         primary_provider: Optional[str] = None,
         fallback_provider: Optional[str] = None,
+        settings: Optional[Settings] = None,
         _primary_instance: Optional[BaseProviderAdapter] = None,
         _fallback_instance: Optional[BaseProviderAdapter] = None,
         # Legacy support:
         provider: Optional[str] = None,
         _provider_instance: Optional[BaseProviderAdapter] = None,
     ) -> None:
+        self.settings = settings or get_settings()
+
         # Determine primary provider
         if _primary_instance is not None:
             self._primary_adapter = _primary_instance
@@ -539,17 +584,18 @@ class ModelGateway:
             primary_name = (
                 primary_provider
                 or provider
+                or self.settings.primary_provider
                 or os.getenv("GATEWAY_PRIMARY_PROVIDER")
                 or os.getenv("GATEWAY_PROVIDER", self.DEFAULT_PRIMARY)
             )
-            self._primary_adapter = _build_adapter(primary_name)
+            self._primary_adapter = _build_adapter(primary_name, settings=self.settings)
 
         # Determine optional fallback provider
         if _fallback_instance is not None:
             self._fallback_adapter: Optional[BaseProviderAdapter] = _fallback_instance
-        elif fallback_provider or os.getenv("GATEWAY_FALLBACK_PROVIDER"):
-            fb_name = fallback_provider or os.getenv("GATEWAY_FALLBACK_PROVIDER")
-            self._fallback_adapter = _build_adapter(fb_name) if fb_name else None
+        elif fallback_provider or self.settings.fallback_provider or os.getenv("GATEWAY_FALLBACK_PROVIDER"):
+            fb_name = fallback_provider or self.settings.fallback_provider or os.getenv("GATEWAY_FALLBACK_PROVIDER")
+            self._fallback_adapter = _build_adapter(fb_name, settings=self.settings) if fb_name else None
         else:
             self._fallback_adapter = None
 
@@ -643,7 +689,7 @@ class ModelGateway:
     def swap_provider(self, provider: str) -> None:
         """Hot-swap the active primary provider at runtime."""
         old = self.provider_name
-        self._primary_adapter = _build_adapter(provider)
+        self._primary_adapter = _build_adapter(provider, settings=self.settings)
         logger.info("ModelGateway: swapped primary provider %s -> %s", old, self.provider_name)
 
 
