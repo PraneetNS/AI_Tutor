@@ -292,6 +292,9 @@ class DefaultGuardrails(BaseGuardrails):
         return self.guardrail.get_fallback_response(error=error, request=request)
 
 
+SAFE_IN_CHARACTER_FALLBACK = "I'm having trouble right now, please try again in a moment."
+
+
 # =====================================================================
 # END-TO-END TUTOR PIPELINE
 # =====================================================================
@@ -314,97 +317,145 @@ class TutorPipeline:
         self.guardrails = guardrails or DefaultGuardrails()
         self.session_store = session_store or InMemorySessionStore()
 
-    def process(self, request: AIChatRequest) -> AIChatResponse:
+    def process(
+        self,
+        request: AIChatRequest,
+        request_id: Optional[str] = None
+    ) -> AIChatResponse:
         session_id = request.session_id or f"sess_{uuid.uuid4().hex[:10]}"
+        user_id = str(request.student_id or request.user_id if hasattr(request, "user_id") else (request.student_id or "anonymous"))
+        req_id = request_id or getattr(request, "request_id", None) or f"req_{uuid.uuid4().hex[:10]}"
+        current_step = "initialization"
+        current_state = PedagogyState()
 
-        session_data = self.session_store.get_session(session_id)
-        history = list(request.conversation_history or session_data.messages)
-        current_state = session_data.pedagogy_state
-
-        # STAGE 1: ROUTER
-        classification = self.router.route(request=request, history=history)
-
-        # STAGE 2: PEDAGOGY ENGINE
-        updated_state = self.pedagogy_engine.evaluate(
-            request=request,
-            classification=classification,
-            current_state=current_state,
-            history=history
-        )
-
-        # STAGE 3: KNOWLEDGE INTERFACE
-        retrieved_chunks: List[Chunk] = []
-        knowledge_source_name: Optional[str] = None
-        citations: List[SourceCitation] = []
-
-        should_retrieve = (
-            classification.label == IntentLabel.CONCEPT 
-            and request.course_id is not None 
-            and self.knowledge_source is not None
-        )
-
-        if should_retrieve:
-            filters = {"course_id": request.course_id}
-            if request.lecture_id is not None:
-                filters["lecture_id"] = request.lecture_id
-
-            try:
-                retrieved_chunks = self.knowledge_source.retrieve(query=request.message, filters=filters)
-                knowledge_source_name = type(self.knowledge_source).__name__
-
-                for c in retrieved_chunks:
-                    meta = c.metadata or {}
-                    lec_id = meta.get("lecture_id", int(c.source_id) if isinstance(c.source_id, int) or (isinstance(c.source_id, str) and c.source_id.isdigit()) else (request.lecture_id or 0))
-                    citations.append(
-                        SourceCitation(
-                            lecture_id=lec_id,
-                            title=c.source_title,
-                            chunk_id=meta.get("chunk_id"),
-                            snippet=c.content[:150] + "..." if len(c.content) > 150 else c.content,
-                            relevance_score=meta.get("relevance_score") or meta.get("hybrid_score")
-                        )
-                    )
-            except Exception as e:
-                logger.error(f"KnowledgeSource retrieval failed: {e}")
-
-        # STAGE 4: PROMPT ORCHESTRATOR
-        prompt = self.prompt_orchestrator.build_prompt(
-            request=request,
-            pedagogy_state=updated_state,
-            chunks=retrieved_chunks,
-            history=history
-        )
-
-        # STAGE 5: MODEL ADAPTER (With resilient error/timeout handling)
         try:
-            raw_output = self.model_adapter.generate(prompt=prompt, pedagogy_state=updated_state)
-            raw_answer = raw_output.answer
-            final_state = raw_output.pedagogy_state or updated_state
-        except Exception as e:
-            # Model failure or timeout fallback
-            raw_answer = self.guardrails.get_fallback_response(error=e, request=request)
-            final_state = updated_state
+            # STEP: SESSION_STORE (Load history & state)
+            current_step = "session_store"
+            session_data = self.session_store.get_session(session_id)
+            history = list(request.conversation_history or session_data.messages)
+            current_state = session_data.pedagogy_state
 
-        # STAGE 6: GUARDRAILS (Safety check, prompt leak scrub, RAG hallucination check)
-        guardrail_result = self.guardrails.validate_and_sanitize(
-            raw_answer=raw_answer,
-            pedagogy_state=final_state,
-            request=request,
-            sources=citations,
-            chunks=retrieved_chunks
-        )
-        safe_answer = guardrail_result.sanitized_answer
+            # STEP 1: ROUTER
+            current_step = "router"
+            classification = self.router.route(request=request, history=history)
 
-        # STAGE 7: PERSIST TO SESSION STORE
-        self.session_store.append_message(session_id, Role.USER, request.message)
-        self.session_store.append_message(session_id, Role.ASSISTANT, safe_answer)
-        self.session_store.update_pedagogy_state(session_id, final_state)
+            # STEP 2: PEDAGOGY ENGINE
+            current_step = "pedagogy_engine"
+            updated_state = self.pedagogy_engine.evaluate(
+                request=request,
+                classification=classification,
+                current_state=current_state,
+                history=history
+            )
 
-        return AIChatResponse(
-            answer=safe_answer,
-            session_id=session_id,
-            pedagogy_mode=final_state.pedagogy_mode,
-            hint_level=final_state.hint_level,
-            knowledge_source_used=knowledge_source_name,
-            sources=citations
-        )
+            # STEP 3: CONTEXT RESOLVER / KNOWLEDGE INTERFACE
+            current_step = "context_resolver"
+            retrieved_chunks: List[Chunk] = []
+            knowledge_source_name: Optional[str] = None
+            citations: List[SourceCitation] = []
+
+            should_retrieve = (
+                classification.label == IntentLabel.CONCEPT 
+                and request.course_id is not None 
+                and self.knowledge_source is not None
+            )
+
+            if should_retrieve:
+                filters = {"course_id": request.course_id}
+                if request.lecture_id is not None:
+                    filters["lecture_id"] = request.lecture_id
+
+                try:
+                    retrieved_chunks = self.knowledge_source.retrieve(query=request.message, filters=filters)
+                    knowledge_source_name = type(self.knowledge_source).__name__
+
+                    for c in retrieved_chunks:
+                        meta = c.metadata or {}
+                        lec_id = meta.get("lecture_id", int(c.source_id) if isinstance(c.source_id, int) or (isinstance(c.source_id, str) and c.source_id.isdigit()) else (request.lecture_id or 0))
+                        citations.append(
+                            SourceCitation(
+                                lecture_id=lec_id,
+                                title=c.source_title,
+                                chunk_id=meta.get("chunk_id"),
+                                snippet=c.content[:150] + "..." if len(c.content) > 150 else c.content,
+                                relevance_score=meta.get("relevance_score") or meta.get("hybrid_score")
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[PIPELINE RETRIEVAL WARNING] request_id=%s user_id=%s session_id=%s error=%s",
+                        req_id, user_id, session_id, e
+                    )
+
+            # STEP 4: PROMPT ORCHESTRATOR
+            current_step = "prompt_orchestrator"
+            prompt = self.prompt_orchestrator.build_prompt(
+                request=request,
+                pedagogy_state=updated_state,
+                chunks=retrieved_chunks,
+                history=history
+            )
+
+            # STEP 5: MODEL GATEWAY (With resilient adapter error handling)
+            current_step = "model_gateway"
+            try:
+                raw_output = self.model_adapter.generate(prompt=prompt, pedagogy_state=updated_state)
+                raw_answer = raw_output.answer
+                final_state = raw_output.pedagogy_state or updated_state
+            except Exception as e:
+                logger.warning(
+                    "[PIPELINE MODEL GATEWAY FALLBACK] request_id=%s user_id=%s session_id=%s error=%s",
+                    req_id, user_id, session_id, e
+                )
+                raw_answer = self.guardrails.get_fallback_response(error=e, request=request)
+                final_state = updated_state
+
+            # STEP 6: GUARDRAILS (Safety check, prompt leak scrub, RAG hallucination check)
+            current_step = "guardrails"
+            guardrail_result = self.guardrails.validate_and_sanitize(
+                raw_answer=raw_answer,
+                pedagogy_state=final_state,
+                request=request,
+                sources=citations,
+                chunks=retrieved_chunks
+            )
+            safe_answer = guardrail_result.sanitized_answer
+
+            # STEP 7: PERSIST TO SESSION STORE
+            current_step = "session_store"
+            try:
+                self.session_store.append_message(session_id, Role.USER, request.message)
+                self.session_store.append_message(session_id, Role.ASSISTANT, safe_answer)
+                self.session_store.update_pedagogy_state(session_id, final_state)
+            except Exception as e:
+                logger.warning(
+                    "[PIPELINE SESSION PERSIST WARNING] request_id=%s user_id=%s session_id=%s error=%s",
+                    req_id, user_id, session_id, e
+                )
+
+            return AIChatResponse(
+                answer=safe_answer,
+                session_id=session_id,
+                pedagogy_mode=final_state.pedagogy_mode,
+                hint_level=final_state.hint_level,
+                knowledge_source_used=knowledge_source_name,
+                sources=citations
+            )
+
+        except Exception as exc:
+            logger.error(
+                "[PIPELINE UNHANDLED EXCEPTION] request_id=%s user_id=%s session_id=%s failed_step=%s error=%s",
+                req_id,
+                user_id,
+                session_id,
+                current_step,
+                exc,
+                exc_info=True
+            )
+            return AIChatResponse(
+                answer=SAFE_IN_CHARACTER_FALLBACK,
+                session_id=session_id,
+                pedagogy_mode=current_state.pedagogy_mode if current_state else PedagogyMode.DIRECT,
+                hint_level=current_state.hint_level if current_state else 0,
+                sources=[]
+            )
